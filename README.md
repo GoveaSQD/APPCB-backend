@@ -55,6 +55,11 @@
 
 ## 🚀 Instalación
 
+npm install
+npm run dev
+Para modo producción: 
+npm start
+
 ### **Requisitos Previos**
 
 ```bash
