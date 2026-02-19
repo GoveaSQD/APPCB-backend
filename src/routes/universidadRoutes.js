@@ -7,6 +7,10 @@ const { validateId } = require('../middleware/validationMiddleware');
 // Todas las rutas requieren autenticación
 router.use(authenticateToken);
 
+// Rutas por estatus
+router.get('/estatus/:estatus', universidadController.getByEstatus);
+router.patch('/:id/estatus', validateId, universidadController.cambiarEstatus);
+
 // Rutas CRUD
 router.post('/', universidadController.create);
 router.get('/', universidadController.getAll);
