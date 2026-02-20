@@ -64,7 +64,7 @@ npm start
 
 ```bash
 # Verificar instalaciones
-node --version    # >= 18.0.0
+node --version    # >= 18.0.0 v22.17.0
 npm --version     # >= 9.0.0
 mysql --version   # >= 8.0.0
 ```
