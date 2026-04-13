@@ -4,7 +4,7 @@ class Universidad {
     // Crear universidad
     static async create({ nombre, ciudad, pais, estado, estatus }) {
         const [result] = await pool.execute(
-            'INSERT INTO universidades (nombre, ciudad, pais, estado, estatus) VALUES (?, ?, ?, ?, ?',
+            'INSERT INTO universidades (nombre, ciudad, pais, estado, estatus) VALUES (?, ?, ?, ?, ?)',
             [nombre, ciudad, pais, estado, estatus]
         );
         return result.insertId;
