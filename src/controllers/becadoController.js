@@ -6,76 +6,26 @@ const logger = require('../utils/logger');
 
 const becadoController = {
     // Crear becado
+    // En becadoController.js - create
     create: async (req, res) => {
         try {
             const { 
-                nombre, 
-                apellido_p, 
-                apellido_m, 
-                estatus, 
-                carrera, 
-                id_universidad, 
-                id_modalidad,
-                monto_autorizado,
-                monto_1,
-                monto_2,
-                monto_3,
-                monto_4,
-                monto_5,
-                monto_6,
-                erogado,
-                pendiente_erogar
+                nombre, apellido_p, apellido_m, estatus, tipo_inactivo,
+                carrera, id_universidad, id_modalidad, monto_autorizado,
+                pagos  // ← NUEVO: recibir array de pagos
             } = req.body;
 
-            // Validar campos requeridos (según estructura NOT NULL)
             if (!nombre || !apellido_p) {
                 return errorResponse(res, 'Nombre y apellido paterno son requeridos', 400);
             }
 
-            // Validar que existan las relaciones si vienen
-            if (id_universidad) {
-                const universidad = await Universidad.findById(id_universidad);
-                if (!universidad) {
-                    return errorResponse(res, 'Universidad no encontrada', 404);
-                }
-            }
-
-            if (id_modalidad) {
-                const modalidad = await Modalidad.findById(id_modalidad);
-                if (!modalidad) {
-                    return errorResponse(res, 'Modalidad no encontrada', 404);
-                }
-            }
-
-            // Preparar datos - la BD ya tiene defaults para los montos
-            const becadoData = {
-                nombre,
-                apellido_p,
-                apellido_m: apellido_m || null,
-                estatus: estatus !== undefined ? estatus : 1,
-                carrera: carrera || null,
-                id_universidad: id_universidad || null,
-                id_modalidad: id_modalidad || null,
-                monto_autorizado: monto_autorizado || 0.00,
-                monto_1: monto_1 || 0.00,
-                monto_2: monto_2 || 0.00,
-                monto_3: monto_3 || 0.00,
-                monto_4: monto_4 || 0.00,
-                monto_5: monto_5 || 0.00,
-                monto_6: monto_6 || 0.00,
-                erogado: erogado || 0.00,
-                pendiente_erogar: pendiente_erogar || 0.00
-            };
-
-            logger.info('Creando nuevo becado', { 
-                nombre: becadoData.nombre,
-                apellido_p: becadoData.apellido_p,
-                carrera: becadoData.carrera 
+            const nuevoId = await Becado.create({
+                nombre, apellido_p, apellido_m, estatus, tipo_inactivo,
+                carrera, id_universidad, id_modalidad, monto_autorizado,
+                pagos: pagos || []  // ← NUEVO
             });
-
-            const nuevoId = await Becado.create(becadoData);
-            const becado = await Becado.findById(nuevoId);
             
+            const becado = await Becado.findById(nuevoId);
             successResponse(res, becado, 'Becado creado exitosamente', 201);
 
         } catch (error) {
@@ -116,45 +66,23 @@ const becadoController = {
         }
     },
 
-    // Actualizar becado
+    // En becadoController.js - update
     update: async (req, res) => {
         try {
             const { id } = req.params;
-            const updateData = req.body;
+            const updateData = req.body; // ← ya incluye pagos
 
-            logger.info('Actualizando becado', { id });
-
-            // Verificar si el becado existe
             const existingBecado = await Becado.findById(id);
             if (!existingBecado) {
-                logger.warn('Becado no encontrado para actualizar', { id });
                 return errorResponse(res, 'Becado no encontrado', 404);
             }
 
-            // Verificar relaciones si vienen en la actualización
-            if (updateData.id_universidad) {
-                const universidad = await Universidad.findById(updateData.id_universidad);
-                if (!universidad) {
-                    return errorResponse(res, 'Universidad no encontrada', 404);
-                }
-            }
-
-            if (updateData.id_modalidad) {
-                const modalidad = await Modalidad.findById(updateData.id_modalidad);
-                if (!modalidad) {
-                    return errorResponse(res, 'Modalidad no encontrada', 404);
-                }
-            }
-
             const updated = await Becado.update(id, updateData);
-
             if (!updated) {
-                logger.error('Error al actualizar becado', { id });
                 return errorResponse(res, 'Error al actualizar becado', 400);
             }
 
             const becado = await Becado.findById(id);
-            logger.info('Becado actualizado exitosamente', { id });
             successResponse(res, becado, 'Becado actualizado exitosamente');
 
         } catch (error) {

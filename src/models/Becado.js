@@ -3,222 +3,162 @@ const logger = require('../utils/logger');
 
 class Becado {
     // Crear becado
+    // Becado.js - Reemplazar método create
     static async create(data) {
-        let connection;
-        try {
-            const {
-                nombre, 
-                apellido_p, 
-                apellido_m, 
-                estatus, 
-                carrera, 
-                id_universidad, 
-                id_modalidad,
-                monto_autorizado,
-                monto_1,
-                monto_2,
-                monto_3,
-                monto_4,
-                monto_5,
-                monto_6,
-                erogado,
-                pendiente_erogar
-            } = data;
+    let connection;
+    try {
+        const {
+            nombre, apellido_p, apellido_m, estatus, tipo_inactivo,
+            carrera, id_universidad, id_modalidad, monto_autorizado,
+            pagos = []  // ← NUEVO: array de pagos
+        } = data;
 
-            // Valores por defecto basados en la estructura de la tabla
-            const values = [
-                nombre,                                     // NOT NULL
-                apellido_p,                                 // NOT NULL
-                apellido_m || null,                         // DEFAULT NULL
-                estatus !== undefined ? estatus : 1,        // DEFAULT '1'
-                carrera || null,                             // DEFAULT NULL
-                id_universidad || null,                      // DEFAULT NULL
-                id_modalidad || null,                        // DEFAULT NULL
-                monto_autorizado !== undefined ? monto_autorizado : 0.00,  // DEFAULT '0.00'
-                monto_1 !== undefined ? monto_1 : 0.00,                    // DEFAULT '0.00'
-                monto_2 !== undefined ? monto_2 : 0.00,                    // DEFAULT '0.00'
-                monto_3 !== undefined ? monto_3 : 0.00,                    // DEFAULT '0.00'
-                monto_4 !== undefined ? monto_4 : 0.00,                    // DEFAULT '0.00'
-                monto_5 !== undefined ? monto_5 : 0.00,                    // DEFAULT '0.00'
-                monto_6 !== undefined ? monto_6 : 0.00,                    // DEFAULT '0.00'
-                erogado !== undefined ? erogado : 0.00,                    // DEFAULT '0.00'
-                pendiente_erogar !== undefined ? pendiente_erogar : 0.00   // DEFAULT '0.00'
-            ];
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
 
-            // Verificar campos requeridos (NOT NULL)
-            if (!values[0] || !values[1]) {
-                throw new Error('Nombre y apellido paterno son campos requeridos');
-            }
+        // 1. Insertar becado
+        const [result] = await connection.execute(
+            `INSERT INTO becados (
+                nombre, apellido_p, apellido_m, estatus, tipo_inactivo,
+                carrera, id_universidad, id_modalidad, monto_autorizado
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [nombre, apellido_p, apellido_m, estatus || 1, tipo_inactivo || null,
+             carrera || null, id_universidad || null, id_modalidad || null, monto_autorizado || 0]
+        );
 
-            connection = await pool.getConnection();
-            
-            const [result] = await connection.execute(
-                `INSERT INTO becados (
-                    nombre, apellido_p, apellido_m, estatus, carrera, 
-                    id_universidad, id_modalidad, monto_autorizado,
-                    monto_1, monto_2, monto_3, monto_4, monto_5, monto_6,
-                    erogado, pendiente_erogar
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                values
+        const id_becado = result.insertId;
+
+        // 2. Insertar pagos
+        for (const pago of pagos) {
+            await connection.execute(
+                `INSERT INTO pagos_becados (id_becado, concepto, monto, fecha_pago)
+                 VALUES (?, ?, ?, ?)`,
+                [id_becado, pago.concepto || 'Pago', pago.monto || 0, pago.fecha_pago || new Date()]
             );
-            
-            logger.debug('Becado creado en BD', { 
-                insertId: result.insertId,
-                nombre,
-                apellido_p 
-            });
-            
-            return result.insertId;
-
-        } catch (error) {
-            logger.error('Error en Becado.create:', error);
-            throw error;
-        } finally {
-            if (connection) connection.release();
         }
+
+        await connection.commit();
+        
+        // Calcular erogado total
+        const erogado = pagos.reduce((sum, p) => sum + (p.monto || 0), 0);
+        const pendiente = (monto_autorizado || 0) - erogado;
+        
+        // Actualizar erogado y pendiente en becados
+        await connection.execute(
+            `UPDATE becados SET erogado = ?, pendiente_erogar = ? WHERE id_becado = ?`,
+            [erogado, pendiente, id_becado]
+        );
+
+        logger.debug('Becado creado con pagos', { id_becado, totalPagos: pagos.length });
+        return id_becado;
+
+    } catch (error) {
+        if (connection) await connection.rollback();
+        logger.error('Error en Becado.create:', error);
+        throw error;
+    } finally {
+        if (connection) connection.release();
     }
+}
 
     // Obtener todos los becados con información relacionada
-    static async getAll() {
-        let connection;
-        try {
-            connection = await pool.getConnection();
-            
-            const [rows] = await connection.execute(`
-                SELECT 
-                    b.*, 
-                    u.nombre as universidad_nombre,
-                    u.ciudad as universidad_ciudad,
-                    u.pais as universidad_pais,
-                    m.tipo as modalidad_tipo
-                FROM becados b
-                LEFT JOIN universidades u ON b.id_universidad = u.id_universidad
-                LEFT JOIN modalidades m ON b.id_modalidad = m.id_modalidad
-                ORDER BY b.apellido_p, b.apellido_m, b.nombre
-            `);
-            
-            logger.debug('Becados obtenidos de BD', { count: rows.length });
-            return rows;
-
-        } catch (error) {
-            logger.error('Error en Becado.getAll:', error);
-            throw error;
-        } finally {
-            if (connection) connection.release();
+static async getAll(anio = null) {
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        
+        let becadosQuery = `
+            SELECT 
+                b.*, 
+                u.nombre as universidad_nombre,
+                u.ciudad as universidad_ciudad,
+                u.pais as universidad_pais,
+                m.tipo as modalidad_tipo
+            FROM becados b
+            LEFT JOIN universidades u ON b.id_universidad = u.id_universidad
+            LEFT JOIN modalidades m ON b.id_modalidad = m.id_modalidad
+        `;
+        
+        if (anio) {
+            becadosQuery += ` WHERE YEAR(b.fecha_creacion) = ?`;
         }
-    }
-
-    // Obtener becado por ID
-    static async findById(id) {
-        let connection;
-        try {
-            connection = await pool.getConnection();
-            
-            const [rows] = await connection.execute(`
-                SELECT 
-                    b.*, 
-                    u.nombre as universidad_nombre,
-                    u.ciudad as universidad_ciudad,
-                    u.pais as universidad_pais,
-                    m.tipo as modalidad_tipo
-                FROM becados b
-                LEFT JOIN universidades u ON b.id_universidad = u.id_universidad
-                LEFT JOIN modalidades m ON b.id_modalidad = m.id_modalidad
-                WHERE b.id_becado = ?
-            `, [id]);
-            
-            logger.debug('Becado obtenido por ID', { id, found: rows.length > 0 });
-            return rows[0];
-
-        } catch (error) {
-            logger.error('Error en Becado.findById:', error);
-            throw error;
-        } finally {
-            if (connection) connection.release();
-        }
-    }
-
-    // Actualizar becado
-    static async update(id, data) {
-        let connection;
-        try {
-            const {
-                nombre, 
-                apellido_p, 
-                apellido_m, 
-                estatus, 
-                carrera, 
-                id_universidad, 
-                id_modalidad,
-                monto_autorizado,
-                monto_1,
-                monto_2,
-                monto_3,
-                monto_4,
-                monto_5,
-                monto_6,
-                erogado,
-                pendiente_erogar
-            } = data;
-
-            const values = [
-                nombre,                                     // NOT NULL
-                apellido_p,                                 // NOT NULL
-                apellido_m !== undefined ? apellido_m : null,
-                estatus !== undefined ? estatus : 1,
-                carrera !== undefined ? carrera : null,
-                id_universidad !== undefined ? id_universidad : null,
-                id_modalidad !== undefined ? id_modalidad : null,
-                monto_autorizado !== undefined ? monto_autorizado : 0.00,
-                monto_1 !== undefined ? monto_1 : 0.00,
-                monto_2 !== undefined ? monto_2 : 0.00,
-                monto_3 !== undefined ? monto_3 : 0.00,
-                monto_4 !== undefined ? monto_4 : 0.00,
-                monto_5 !== undefined ? monto_5 : 0.00,
-                monto_6 !== undefined ? monto_6 : 0.00,
-                erogado !== undefined ? erogado : 0.00,
-                pendiente_erogar !== undefined ? pendiente_erogar : 0.00,
-                id
-            ];
-
-            connection = await pool.getConnection();
-            
-            const [result] = await connection.execute(
-                `UPDATE becados 
-                 SET nombre = ?, 
-                     apellido_p = ?, 
-                     apellido_m = ?, 
-                     estatus = ?, 
-                     carrera = ?, 
-                     id_universidad = ?, 
-                     id_modalidad = ?,
-                     monto_autorizado = ?,
-                     monto_1 = ?,
-                     monto_2 = ?,
-                     monto_3 = ?,
-                     monto_4 = ?,
-                     monto_5 = ?,
-                     monto_6 = ?,
-                     erogado = ?,
-                     pendiente_erogar = ?
-                 WHERE id_becado = ?`,
-                values
+        
+        becadosQuery += ` ORDER BY b.apellido_p, b.apellido_m, b.nombre`;
+        
+        const params = anio ? [anio] : [];
+        const [becados] = await connection.execute(becadosQuery, params);
+        
+        // Obtener pagos para cada becado
+        for (let becado of becados) {
+            const [pagos] = await connection.execute(
+                `SELECT id_pago, concepto, monto, fecha_pago 
+                 FROM pagos_becados 
+                 WHERE id_becado = ? 
+                 ORDER BY fecha_pago`,
+                [becado.id_becado]
             );
+            becado.pagos = pagos;
             
-            logger.debug('Becado actualizado en BD', { 
-                id, 
-                affectedRows: result.affectedRows 
-            });
-            
-            return result.affectedRows > 0;
-
-        } catch (error) {
-            logger.error('Error en Becado.update:', error);
-            throw error;
-        } finally {
-            if (connection) connection.release();
+            // Recalcular erogado desde los pagos
+            const erogado = pagos.reduce((sum, p) => sum + (p.monto || 0), 0);
+            becado.erogado = erogado;
+            becado.pendiente_erogar = (becado.monto_autorizado || 0) - erogado;
         }
+        
+        return becados;
+
+    } catch (error) {
+        logger.error('Error en Becado.getAll:', error);
+        throw error;
+    } finally {
+        if (connection) connection.release();
     }
+}
+
+// Becado.js - Reemplazar método findById
+static async findById(id) {
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        
+        const [rows] = await connection.execute(`
+            SELECT 
+                b.*, 
+                u.nombre as universidad_nombre,
+                u.ciudad as universidad_ciudad,
+                u.pais as universidad_pais,
+                m.tipo as modalidad_tipo
+            FROM becados b
+            LEFT JOIN universidades u ON b.id_universidad = u.id_universidad
+            LEFT JOIN modalidades m ON b.id_modalidad = m.id_modalidad
+            WHERE b.id_becado = ?
+        `, [id]);
+        
+        if (rows[0]) {
+            const [pagos] = await connection.execute(
+                `SELECT id_pago, concepto, monto, fecha_pago 
+                 FROM pagos_becados 
+                 WHERE id_becado = ? 
+                 ORDER BY fecha_pago`,
+                [id]
+            );
+            rows[0].pagos = pagos;
+            
+            // Recalcular erogado
+            const erogado = pagos.reduce((sum, p) => sum + (p.monto || 0), 0);
+            rows[0].erogado = erogado;
+            rows[0].pendiente_erogar = (rows[0].monto_autorizado || 0) - erogado;
+        }
+        
+        return rows[0];
+
+    } catch (error) {
+        logger.error('Error en Becado.findById:', error);
+        throw error;
+    } finally {
+        if (connection) connection.release();
+    }
+}
 
     // Eliminar becado
     static async delete(id) {
@@ -316,6 +256,64 @@ class Becado {
 
         } catch (error) {
             logger.error('Error en Becado.getResumenEstadistico:', error);
+            throw error;
+        } finally {
+            if (connection) connection.release();
+        }
+    }
+
+    // Becado.js - Reemplazar método update
+    static async update(id, data) {
+        let connection;
+        try {
+            const {
+                nombre, apellido_p, apellido_m, estatus, tipo_inactivo,
+                carrera, id_universidad, id_modalidad, monto_autorizado,
+                pagos = []
+            } = data;
+
+            connection = await pool.getConnection();
+            await connection.beginTransaction();
+
+            // 1. Actualizar datos del becado
+            await connection.execute(
+                `UPDATE becados 
+                SET nombre = ?, apellido_p = ?, apellido_m = ?, 
+                    estatus = ?, tipo_inactivo = ?, carrera = ?, 
+                    id_universidad = ?, id_modalidad = ?, monto_autorizado = ?
+                WHERE id_becado = ?`,
+                [nombre, apellido_p, apellido_m, estatus || 1, tipo_inactivo || null,
+                carrera || null, id_universidad || null, id_modalidad || null,
+                monto_autorizado || 0, id]
+            );
+
+            // 2. Eliminar pagos antiguos
+            await connection.execute(`DELETE FROM pagos_becados WHERE id_becado = ?`, [id]);
+
+            // 3. Insertar pagos nuevos
+            for (const pago of pagos) {
+                await connection.execute(
+                    `INSERT INTO pagos_becados (id_becado, concepto, monto, fecha_pago)
+                    VALUES (?, ?, ?, ?)`,
+                    [id, pago.concepto || 'Pago', pago.monto || 0, pago.fecha_pago || new Date()]
+                );
+            }
+
+            // 4. Calcular y actualizar erogado
+            const erogado = pagos.reduce((sum, p) => sum + (p.monto || 0), 0);
+            const pendiente = (monto_autorizado || 0) - erogado;
+            
+            await connection.execute(
+                `UPDATE becados SET erogado = ?, pendiente_erogar = ? WHERE id_becado = ?`,
+                [erogado, pendiente, id]
+            );
+
+            await connection.commit();
+            return true;
+
+        } catch (error) {
+            if (connection) await connection.rollback();
+            logger.error('Error en Becado.update:', error);
             throw error;
         } finally {
             if (connection) connection.release();
