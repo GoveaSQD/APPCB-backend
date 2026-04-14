@@ -1,164 +1,188 @@
 const { pool } = require('../config/database');
 const logger = require('../utils/logger');
 
+const formatMySQLDate = (date) => {
+    if (!date) return null;
+    if (date instanceof Date) {
+        return date.toISOString().slice(0, 19).replace('T', ' ');
+    }
+    if (typeof date === 'string') {
+        // Si ya está en formato MySQL, devolverlo
+        if (date.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)) {
+            return date;
+        }
+        // Convertir de ISO
+        try {
+            const parsedDate = new Date(date);
+            if (!isNaN(parsedDate.getTime())) {
+                return parsedDate.toISOString().slice(0, 19).replace('T', ' ');
+            }
+        } catch (e) {
+            logger.warn('Error parsing date:', date);
+        }
+    }
+    return null;
+};
+
 class Becado {
     // Crear becado
     // Becado.js - Reemplazar método create
     static async create(data) {
-    let connection;
-    try {
-        const {
-            nombre, apellido_p, apellido_m, estatus, tipo_inactivo,
-            carrera, id_universidad, id_modalidad, monto_autorizado,
-            pagos = []  // ← NUEVO: array de pagos
-        } = data;
-
-        connection = await pool.getConnection();
-        await connection.beginTransaction();
-
-        // 1. Insertar becado
-        const [result] = await connection.execute(
-            `INSERT INTO becados (
+        let connection;
+        try {
+            const {
                 nombre, apellido_p, apellido_m, estatus, tipo_inactivo,
-                carrera, id_universidad, id_modalidad, monto_autorizado
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [nombre, apellido_p, apellido_m, estatus || 1, tipo_inactivo || null,
-             carrera || null, id_universidad || null, id_modalidad || null, monto_autorizado || 0]
-        );
+                carrera, id_universidad, id_modalidad, monto_autorizado,
+                pagos = []
+            } = data;
 
-        const id_becado = result.insertId;
+            connection = await pool.getConnection();
+            await connection.beginTransaction();
 
-        // 2. Insertar pagos
-        for (const pago of pagos) {
-            await connection.execute(
-                `INSERT INTO pagos_becados (id_becado, concepto, monto, fecha_pago)
-                 VALUES (?, ?, ?, ?)`,
-                [id_becado, pago.concepto || 'Pago', pago.monto || 0, pago.fecha_pago || new Date()]
+            // 1. Insertar becado
+            const [result] = await connection.execute(
+                `INSERT INTO becados (
+                    nombre, apellido_p, apellido_m, estatus, tipo_inactivo,
+                    carrera, id_universidad, id_modalidad, monto_autorizado
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [nombre, apellido_p, apellido_m, estatus !== undefined ? estatus : 1, tipo_inactivo || null,
+                carrera || null, id_universidad || null, id_modalidad || null, monto_autorizado || 0]
             );
+
+            const id_becado = result.insertId;
+
+            // 2. Insertar pagos (usando fecha_pago, no fecha)
+            for (const pago of pagos) {
+                await connection.execute(
+                    `INSERT INTO pagos_becados (id_becado, concepto, monto, fecha_pago)
+                    VALUES (?, ?, ?, ?)`,
+                    [id_becado, pago.concepto || 'Pago', pago.monto || 0, formatMySQLDate(pago.fecha_pago) || new Date()]
+                );
+            }
+
+            await connection.commit();
+            
+            // Calcular erogado total
+            const erogado = pagos.reduce((sum, p) => sum + (p.monto || 0), 0);
+            const pendiente = (monto_autorizado || 0) - erogado;
+            
+            // Actualizar erogado y pendiente en becados
+            await connection.execute(
+                `UPDATE becados SET erogado = ?, pendiente_erogar = ? WHERE id_becado = ?`,
+                [erogado, pendiente, id_becado]
+            );
+
+            logger.debug('Becado creado con pagos', { id_becado, totalPagos: pagos.length });
+            return id_becado;
+
+        } catch (error) {
+            if (connection) await connection.rollback();
+            logger.error('Error en Becado.create:', error);
+            throw error;
+        } finally {
+            if (connection) connection.release();
         }
-
-        await connection.commit();
-        
-        // Calcular erogado total
-        const erogado = pagos.reduce((sum, p) => sum + (p.monto || 0), 0);
-        const pendiente = (monto_autorizado || 0) - erogado;
-        
-        // Actualizar erogado y pendiente en becados
-        await connection.execute(
-            `UPDATE becados SET erogado = ?, pendiente_erogar = ? WHERE id_becado = ?`,
-            [erogado, pendiente, id_becado]
-        );
-
-        logger.debug('Becado creado con pagos', { id_becado, totalPagos: pagos.length });
-        return id_becado;
-
-    } catch (error) {
-        if (connection) await connection.rollback();
-        logger.error('Error en Becado.create:', error);
-        throw error;
-    } finally {
-        if (connection) connection.release();
     }
-}
 
     // Obtener todos los becados con información relacionada
-static async getAll(anio = null) {
-    let connection;
-    try {
-        connection = await pool.getConnection();
-        
-        let becadosQuery = `
-            SELECT 
-                b.*, 
-                u.nombre as universidad_nombre,
-                u.ciudad as universidad_ciudad,
-                u.pais as universidad_pais,
-                m.tipo as modalidad_tipo
-            FROM becados b
-            LEFT JOIN universidades u ON b.id_universidad = u.id_universidad
-            LEFT JOIN modalidades m ON b.id_modalidad = m.id_modalidad
-        `;
-        
-        if (anio) {
-            becadosQuery += ` WHERE YEAR(b.fecha_creacion) = ?`;
-        }
-        
-        becadosQuery += ` ORDER BY b.apellido_p, b.apellido_m, b.nombre`;
-        
-        const params = anio ? [anio] : [];
-        const [becados] = await connection.execute(becadosQuery, params);
-        
-        // Obtener pagos para cada becado
-        for (let becado of becados) {
-            const [pagos] = await connection.execute(
-                `SELECT id_pago, concepto, monto, fecha_pago 
-                 FROM pagos_becados 
-                 WHERE id_becado = ? 
-                 ORDER BY fecha_pago`,
-                [becado.id_becado]
-            );
-            becado.pagos = pagos;
+    // En Becado.js - getAll
+    static async getAll(anio = null) {
+        let connection;
+        try {
+            connection = await pool.getConnection();
             
-            // Recalcular erogado desde los pagos
-            const erogado = pagos.reduce((sum, p) => sum + (p.monto || 0), 0);
-            becado.erogado = erogado;
-            becado.pendiente_erogar = (becado.monto_autorizado || 0) - erogado;
-        }
-        
-        return becados;
-
-    } catch (error) {
-        logger.error('Error en Becado.getAll:', error);
-        throw error;
-    } finally {
-        if (connection) connection.release();
-    }
-}
-
-// Becado.js - Reemplazar método findById
-static async findById(id) {
-    let connection;
-    try {
-        connection = await pool.getConnection();
-        
-        const [rows] = await connection.execute(`
-            SELECT 
-                b.*, 
-                u.nombre as universidad_nombre,
-                u.ciudad as universidad_ciudad,
-                u.pais as universidad_pais,
-                m.tipo as modalidad_tipo
-            FROM becados b
-            LEFT JOIN universidades u ON b.id_universidad = u.id_universidad
-            LEFT JOIN modalidades m ON b.id_modalidad = m.id_modalidad
-            WHERE b.id_becado = ?
-        `, [id]);
-        
-        if (rows[0]) {
-            const [pagos] = await connection.execute(
-                `SELECT id_pago, concepto, monto, fecha_pago 
-                 FROM pagos_becados 
-                 WHERE id_becado = ? 
-                 ORDER BY fecha_pago`,
-                [id]
-            );
-            rows[0].pagos = pagos;
+            let becadosQuery = `
+                SELECT 
+                    b.*, 
+                    u.nombre as universidad_nombre,
+                    u.ciudad as universidad_ciudad,
+                    u.pais as universidad_pais,
+                    m.tipo as modalidad_tipo
+                FROM becados b
+                LEFT JOIN universidades u ON b.id_universidad = u.id_universidad
+                LEFT JOIN modalidades m ON b.id_modalidad = m.id_modalidad
+            `;
             
-            // Recalcular erogado
-            const erogado = pagos.reduce((sum, p) => sum + (p.monto || 0), 0);
-            rows[0].erogado = erogado;
-            rows[0].pendiente_erogar = (rows[0].monto_autorizado || 0) - erogado;
-        }
-        
-        return rows[0];
+            if (anio) {
+                becadosQuery += ` WHERE YEAR(b.fecha_creacion) = ?`;
+            }
+            
+            becadosQuery += ` ORDER BY b.apellido_p, b.apellido_m, b.nombre`;
+            
+            const params = anio ? [anio] : [];
+            const [becados] = await connection.execute(becadosQuery, params);
+            
+            // Obtener pagos para cada becado
+            for (let becado of becados) {
+                const [pagos] = await connection.execute(
+                    `SELECT id_pago, concepto, monto, fecha_pago 
+                    FROM pagos_becados 
+                    WHERE id_becado = ? 
+                    ORDER BY fecha_pago`,
+                    [becado.id_becado]
+                );
+                becado.pagos = pagos;
+                
+                // Recalcular erogado desde los pagos
+                const erogado = pagos.reduce((sum, p) => sum + (p.monto || 0), 0);
+                becado.erogado = erogado;
+                becado.pendiente_erogar = (becado.monto_autorizado || 0) - erogado;
+            }
+            
+            return becados;
 
-    } catch (error) {
-        logger.error('Error en Becado.findById:', error);
-        throw error;
-    } finally {
-        if (connection) connection.release();
+        } catch (error) {
+            logger.error('Error en Becado.getAll:', error);
+            throw error;
+        } finally {
+            if (connection) connection.release();
+        }
     }
-}
+
+    // En Becado.js - findById
+    static async findById(id) {
+        let connection;
+        try {
+            connection = await pool.getConnection();
+            
+            const [rows] = await connection.execute(`
+                SELECT 
+                    b.*, 
+                    u.nombre as universidad_nombre,
+                    u.ciudad as universidad_ciudad,
+                    u.pais as universidad_pais,
+                    m.tipo as modalidad_tipo
+                FROM becados b
+                LEFT JOIN universidades u ON b.id_universidad = u.id_universidad
+                LEFT JOIN modalidades m ON b.id_modalidad = m.id_modalidad
+                WHERE b.id_becado = ?
+            `, [id]);
+            
+            if (rows[0]) {
+                const [pagos] = await connection.execute(
+                    `SELECT id_pago, concepto, monto, fecha_pago 
+                    FROM pagos_becados 
+                    WHERE id_becado = ? 
+                    ORDER BY fecha_pago`,
+                    [id]
+                );
+                rows[0].pagos = pagos;
+                
+                // Recalcular erogado
+                const erogado = pagos.reduce((sum, p) => sum + (p.monto || 0), 0);
+                rows[0].erogado = erogado;
+                rows[0].pendiente_erogar = (rows[0].monto_autorizado || 0) - erogado;
+            }
+            
+            return rows[0];
+
+        } catch (error) {
+            logger.error('Error en Becado.findById:', error);
+            throw error;
+        } finally {
+            if (connection) connection.release();
+        }
+    }
 
     // Eliminar becado
     static async delete(id) {
@@ -262,7 +286,7 @@ static async findById(id) {
         }
     }
 
-    // Becado.js - Reemplazar método update
+    // En Becado.js - método update
     static async update(id, data) {
         let connection;
         try {
@@ -282,7 +306,7 @@ static async findById(id) {
                     estatus = ?, tipo_inactivo = ?, carrera = ?, 
                     id_universidad = ?, id_modalidad = ?, monto_autorizado = ?
                 WHERE id_becado = ?`,
-                [nombre, apellido_p, apellido_m, estatus || 1, tipo_inactivo || null,
+                [nombre, apellido_p, apellido_m, estatus !== undefined ? estatus : 1, tipo_inactivo || null,
                 carrera || null, id_universidad || null, id_modalidad || null,
                 monto_autorizado || 0, id]
             );
@@ -290,12 +314,12 @@ static async findById(id) {
             // 2. Eliminar pagos antiguos
             await connection.execute(`DELETE FROM pagos_becados WHERE id_becado = ?`, [id]);
 
-            // 3. Insertar pagos nuevos
+            // 3. Insertar pagos nuevos (CONVERSIÓN DE FECHA AQUÍ)
             for (const pago of pagos) {
                 await connection.execute(
                     `INSERT INTO pagos_becados (id_becado, concepto, monto, fecha_pago)
                     VALUES (?, ?, ?, ?)`,
-                    [id, pago.concepto || 'Pago', pago.monto || 0, pago.fecha_pago || new Date()]
+                    [id, pago.concepto || 'Pago', pago.monto || 0, formatMySQLDate(pago.fecha_pago) || new Date()]
                 );
             }
 
