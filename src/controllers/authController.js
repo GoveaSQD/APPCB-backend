@@ -8,7 +8,9 @@ const authController = {
     // Registrar nuevo usuario
     register: async (req, res) => {
         try {
-            const { nombre, email, password } = req.body;
+            const { nombre, ap_paterno, ap_materno, email, password, tipo_usuario } = req.body;
+
+            console.log('Registrando usuario:', { nombre, ap_paterno, ap_materno, email, tipo_usuario });
 
             // Verificar si el usuario ya existe
             const existingUser = await Usuario.findByEmail(email);
@@ -16,19 +18,22 @@ const authController = {
                 return errorResponse(res, 'El email ya está registrado', 400);
             }
 
-            // Encriptar contraseña
+            // Encriptar contraseña usando passwordUtils
             const hashedPassword = await hashPassword(password);
 
-            // Crear usuario
+            // Crear usuario con todos los campos
             const userId = await Usuario.create({
                 nombre,
+                ap_paterno: ap_paterno || null,
+                ap_materno: ap_materno || null,
                 email,
-                password: hashedPassword
+                password: hashedPassword,
+                tipo_usuario: tipo_usuario || 2
             });
 
             // Crear token JWT
             const token = jwt.sign(
-                { id: userId, email },
+                { id: userId, email, tipo_usuario: tipo_usuario || 2 },
                 process.env.JWT_SECRET,
                 { expiresIn: process.env.JWT_EXPIRES_IN }
             );
@@ -58,7 +63,6 @@ const authController = {
                 return errorResponse(res, 'Credenciales inválidas', 401);
             }
 
-            // Verificar contraseña
             const validPassword = await comparePassword(password, user.password);
             if (!validPassword) {
                 return errorResponse(res, 'Credenciales inválidas', 401);
@@ -69,7 +73,8 @@ const authController = {
                 { 
                     id: user.id_usuario, 
                     email: user.email,
-                    nombre: user.nombre
+                    nombre: user.nombre,
+                    tipo_usuario: user.tipo_usuario
                 },
                 process.env.JWT_SECRET,
                 { expiresIn: process.env.JWT_EXPIRES_IN }

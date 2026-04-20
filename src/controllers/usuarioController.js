@@ -1,5 +1,6 @@
 const Usuario = require('../models/Usuario');
 const { successResponse, errorResponse } = require('../utils/responseHandler');
+const { hashPassword } = require('../utils/passwordUtils'); // Usar tu utilitario
 
 const usuarioController = {
     // Obtener todos los usuarios
@@ -34,7 +35,18 @@ const usuarioController = {
     update: async (req, res) => {
         try {
             const { id } = req.params;
-            const { nombre, email } = req.body;
+            const { nombre, ap_paterno, ap_materno, email, tipo_usuario, password } = req.body;
+
+            console.log('=== ACTUALIZANDO USUARIO ===');
+            console.log('ID:', id);
+            console.log('Datos recibidos:', { 
+                nombre, 
+                ap_paterno, 
+                ap_materno, 
+                email, 
+                tipo_usuario, 
+                password: password ? '***' : 'no' 
+            });
 
             // Verificar si el usuario existe
             const existingUser = await Usuario.findById(id);
@@ -48,13 +60,30 @@ const usuarioController = {
                 return errorResponse(res, 'El email ya está en uso', 400);
             }
 
-            const updated = await Usuario.update(id, { nombre, email });
+            const updateData = {
+                nombre,
+                ap_paterno: ap_paterno || null,
+                ap_materno: ap_materno || null,
+                email,
+                tipo_usuario: parseInt(tipo_usuario)
+            };
+
+            if (password && password.trim() !== '') {
+                updateData.password = await hashPassword(password);
+                console.log('Actualizando contraseña');
+            }
+
+            console.log('Datos a actualizar en BD:', updateData);
+
+            const updated = await Usuario.update(id, updateData);
 
             if (!updated) {
                 return errorResponse(res, 'Error al actualizar usuario', 400);
             }
 
+            // Obtener usuario actualizado
             const usuario = await Usuario.findById(id);
+            
             successResponse(res, usuario, 'Usuario actualizado exitosamente');
 
         } catch (error) {
