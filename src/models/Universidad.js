@@ -3,6 +3,7 @@ const { pool } = require('../config/database');
 class Universidad {
     // Crear universidad
     static async create({ nombre, ciudad, pais, estado, estatus }) {
+        const estatusNum = estatus === undefined ? 1 : (estatus ? 1 : 0);
         const [result] = await pool.execute(
             'INSERT INTO universidades (nombre, ciudad, pais, estado, estatus) VALUES (?, ?, ?, ?, ?)',
             [nombre, ciudad, pais, estado, estatus]

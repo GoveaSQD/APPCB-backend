@@ -1,20 +1,25 @@
 const Universidad = require('../models/Universidad');
 const { successResponse, errorResponse } = require('../utils/responseHandler');
 
+const normalizeEstatus = (estatus) => {
+    if (estatus === undefined || estatus === null) return 1;
+    if (estatus === true || estatus === 'true' || estatus === 1 || estatus === '1') return 1;
+    if (estatus === false || estatus === 'false' || estatus === 0 || estatus === '0') return 0;
+    return 1;
+};
+
 const universidadController = {
     // Crear universidad
     create: async (req, res) => {
         try {
-            const { nombre, ciudad, pais, estado, estatus } = req.body;
+            let { nombre, ciudad, pais, estado, estatus } = req.body;
+
+            estatus = normalizeEstatus(estatus);
+
 
             // Verificar datos requeridos
             if (!nombre || !ciudad || !pais) {
                 return errorResponse(res, 'Nombre, ciudad y país son requeridos', 400);
-            }
-
-            // Validar que estatus sea 1, 0
-            if (estatus !== undefined && ![1, 0].includes(estatus)) {
-                return errorResponse(res, 'Estatus debe ser 1, 0', 400);
             }
 
             const id = await Universidad.create({ 
@@ -57,7 +62,7 @@ const universidadController = {
             const estatusNum = parseInt(estatus);
             
             // Validar que sea 1, 0
-            if (![1, 2, 3].includes(estatusNum)) {
+            if (![1, 0].includes(estatusNum)) {
                 return errorResponse(res, 'Estatus debe ser 1, 0', 400);
             }
 
@@ -90,16 +95,17 @@ const universidadController = {
     update: async (req, res) => {
         try {
             const { id } = req.params;
-            const { nombre, ciudad, pais, estado, estatus } = req.body;
+            let { nombre, ciudad, pais, estado, estatus } = req.body;
 
             if (!nombre || !ciudad || !pais) {
                 return errorResponse(res, 'Nombre, ciudad y país son requeridos', 400);
             }
 
-            // Validar que estatus sea 1, 0
-            if (estatus !== undefined && ![1, 2, 3].includes(estatus)) {
-                return errorResponse(res, 'Estatus debe ser 1, 0', 400);
+            // Normalizar estatus si viene
+            if (estatus !== undefined) {
+                estatus = normalizeEstatus(estatus);
             }
+
 
             // Verificar si la universidad existe
             const existingUniversidad = await Universidad.findById(id);
